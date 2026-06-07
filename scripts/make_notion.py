@@ -47,6 +47,10 @@ API = "https://api.notion.com/v1"
 
 LABEL_COL = ""  # 전치 표 좌상단(속성 라벨 열 머리)은 빈칸으로 둔다
 
+# '목적' 행 셀의 배경색: 값에 따라 한눈에 구분되게 칠한다(Notion 지원 색만 사용).
+# 색은 데이터가 아니라 '목적' 값에서 렌더 시점에 파생되므로 JSON에는 저장하지 않는다.
+PURPOSE_COLORS = {"실거주": "blue_background", "몸테크": "red_background"}
+
 
 def load_conf():
     conf = {}
@@ -91,19 +95,28 @@ def api(path, body=None, method="POST", token=None):
         raise SystemExit("HTTP %s\n%s" % (e.code, e.read().decode()))
 
 
-def rich_text(value, bold=False):
-    """문자열을 rich_text 배열로. 빈 값은 빈 배열(빈 셀). bold=True면 굵게."""
+def rich_text(value, bold=False, color=None):
+    """문자열을 rich_text 배열로. 빈 값은 빈 배열(빈 셀). bold=True면 굵게, color는 글자/배경색."""
     if not value:
         return []
     rt = {"text": {"content": value}}
+    ann = {}
     if bold:
-        rt["annotations"] = {"bold": True}
+        ann["bold"] = True
+    if color:
+        ann["color"] = color
+    if ann:
+        rt["annotations"] = ann
     return [rt]
 
 
-def table_row(values, bold_from=None):
-    """문자열 리스트 → table_row 블록. bold_from 이상 인덱스 셀은 굵게(헤더의 매물명용)."""
-    cells = [rich_text(v, bold=bold_from is not None and i >= bold_from)
+def table_row(values, bold_from=None, colors=None):
+    """문자열 리스트 → table_row 블록. bold_from 이상 인덱스 셀은 굵게(헤더의 매물명용).
+
+    colors는 values와 같은 길이의 리스트로 셀별 배경색(없으면 None). '목적' 행 색칠용.
+    """
+    cells = [rich_text(v, bold=bold_from is not None and i >= bold_from,
+                       color=colors[i] if colors else None)
              for i, v in enumerate(values)]
     return {"type": "table_row", "table_row": {"cells": cells}}
 
@@ -115,7 +128,11 @@ def build_table_block(attrs, names):
     """
     rows = [table_row([LABEL_COL] + names, bold_from=1)]
     for attr in attrs:
-        rows.append(table_row([attr] + [cell_text(n, attr) for n in names]))
+        values = [cell_text(n, attr) for n in names]
+        # '목적' 행은 값(실거주/몸테크)에 따라 셀 배경색을 입힌다. 라벨 칸(0)은 색 없음.
+        colors = ([None] + [PURPOSE_COLORS.get(v) for v in values]
+                  if attr == "목적" else None)
+        rows.append(table_row([attr] + values, colors=colors))
     return {"type": "table",
             "table": {"table_width": len(names) + 1,
                       "has_column_header": True,
