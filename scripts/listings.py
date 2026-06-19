@@ -23,12 +23,14 @@ def _load(filename):
 LISTINGS = _load("listings.json")
 
 _config = _load("config.json")
-# 거래유형(매매 / 월세·전세)별로 (제목, 행 속성 순서, [(시, 매물명들)]).
-# 거래유형 아래를 다시 '시' 단위 표로 나눈 2단계 구조다(매매 > 경기도 용인시 > 표 …).
+# 거래유형(매매 / 월세·전세)별로 (제목, 행 속성 순서, [(시, [(구, 매물명들)])]).
+# 거래유형 아래를 '시', 다시 그 아래 '구' 단위 표로 나눈 3단계 구조다
+# (매매 > 서울시 > 관악구 > 표 …).
 # attrs는 거래유형마다 다를 수 있다(예: 월세/전세 표는 '가격'을 '월세 가격'·'전세 가격'으로
-# 분리하고 '토허제 해당'이 없다). 시 분류는 config의 배치로만 표현하며, 매물 레코드 자체에는
-# 시 필드를 두지 않는다(pull이 헤딩에서 시를 복원하므로 라운드트립이 일관).
+# 분리하고 '토허제 해당'이 없다). 시·구 분류는 config의 배치로만 표현하며, 매물 레코드 자체에는
+# 시·구 필드를 두지 않는다(pull이 헤딩에서 시·구를 복원하므로 라운드트립이 일관).
 # 시 표 노출 순서: 아래 우선순위를 먼저, 나머지는 가나다순(한글 음절은 유니코드 순=가나다순).
+# 구 표 노출 순서: config의 districts 배열 순서를 그대로 따른다(별도 우선순위 없음).
 CITY_PRIORITY = ["서울시", "경기도 성남시", "경기도 용인시", "경기도 수원시"]
 
 
@@ -44,8 +46,9 @@ GROUPS = [
         g["title"],
         g["attrs"],
         sorted(
-            [(c["city"], c["names"]) for c in g["cities"]],
-            key=lambda cn: _city_sort_key(cn[0]),
+            [(c["city"], [(d["district"], d["names"]) for d in c["districts"]])
+             for c in g["cities"]],
+            key=lambda cd: _city_sort_key(cd[0]),
         ),
     )
     for g in _config["groups"]
@@ -67,8 +70,8 @@ def validate():
     """config 배치와 listings.json의 구조 무결성 위반을 경고 리스트로 반환한다.
 
     - config에 배치됐지만 listings.json에 정의가 없는 매물(오타·미작성)
-    - 둘 이상의 시 표에 중복 배치된 매물
-    - 어느 시 표에도 배치되지 않아 Notion에 안 그려지는 매물
+    - 둘 이상의 구 표에 중복 배치된 매물
+    - 어느 구 표에도 배치되지 않아 Notion에 안 그려지는 매물
 
     (과거 '실거주' 25평 기준 검증은 '실거주'+'재건축 투자'가 '매매'로 통합되며
     기준의 근거가 사라져 제거했다. 평수 조건은 매물_관리.md 문서 기준으로만 관리한다.)
@@ -76,17 +79,19 @@ def validate():
     warnings = []
     placed = []
     for _, _, cities in GROUPS:
-        for city, names in cities:
-            for name in names:
-                placed.append(name)
-                if name not in LISTINGS:
-                    warnings.append("[%s] config에 배치됐으나 listings.json에 정의 없음: %s"
-                                    % (city, name))
+        for city, districts in cities:
+            for district, names in districts:
+                for name in names:
+                    placed.append(name)
+                    if name not in LISTINGS:
+                        warnings.append(
+                            "[%s %s] config에 배치됐으나 listings.json에 정의 없음: %s"
+                            % (city, district, name))
     for name in sorted({n for n in placed if placed.count(n) > 1}):
-        warnings.append("둘 이상의 시 표에 중복 배치됨: %s" % name)
+        warnings.append("둘 이상의 구 표에 중복 배치됨: %s" % name)
     for name in LISTINGS:
         if name not in placed:
-            warnings.append("어느 시 표에도 배치되지 않음(Notion에 안 그려짐): %s" % name)
+            warnings.append("어느 구 표에도 배치되지 않음(Notion에 안 그려짐): %s" % name)
     return warnings
 
 

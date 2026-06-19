@@ -141,23 +141,25 @@ def build_table_block(attrs, names):
 
 
 def heading_block(level, text):
-    """heading_2(거래유형)·heading_3(시) 블록을 만든다. level은 2 또는 3."""
+    """heading_1(거래유형)·heading_2(시)·heading_3(구) 블록을 만든다. level은 1·2·3."""
     key = "heading_%d" % level
     return {"type": key, key: {"rich_text": [{"text": {"content": text}}]}}
 
 
 def build_children():
-    """거래유형(heading_2) → 시(heading_3) → 표 순으로 이어 붙인 최상위 children.
+    """거래유형(heading_1) → 시(heading_2) → 구(heading_3) → 표 순으로 이어 붙인 children.
 
-    pull(notion_pull.py)은 이 블록 순서를 거꾸로 읽어 거래유형·시 계층을 복원하므로,
-    헤딩 레벨(2=거래유형, 3=시)과 [헤딩, 표] 배치 순서를 바꾸면 안 된다.
+    pull(notion_pull.py)은 이 블록 순서를 거꾸로 읽어 거래유형·시·구 계층을 복원하므로,
+    헤딩 레벨(1=거래유형, 2=시, 3=구)과 [헤딩, 표] 배치 순서를 바꾸면 안 된다.
     """
     children = []
     for title, attrs, cities in GROUPS:
-        children.append(heading_block(2, title))
-        for city, names in cities:
-            children.append(heading_block(3, city))
-            children.append(build_table_block(attrs, names))
+        children.append(heading_block(1, title))
+        for city, districts in cities:
+            children.append(heading_block(2, city))
+            for district, names in districts:
+                children.append(heading_block(3, district))
+                children.append(build_table_block(attrs, names))
     return children
 
 
@@ -199,9 +201,10 @@ def main():
     conf["block_ids"] = [b["id"] for b in res.get("results", [])]
     save_conf(conf)
 
-    tables = sum(len(cities) for _, _, cities in GROUPS)
-    n = sum(len(names) for _, _, cities in GROUPS for _, names in cities)
-    print("전치 표 생성 완료 (거래유형 %d개, 시별 표 %d개, 매물 %d건)"
+    tables = sum(len(districts) for _, _, cities in GROUPS for _, districts in cities)
+    n = sum(len(names) for _, _, cities in GROUPS
+            for _, districts in cities for _, names in districts)
+    print("전치 표 생성 완료 (거래유형 %d개, 구별 표 %d개, 매물 %d건)"
           % (len(GROUPS), tables, n))
     print("URL: https://www.notion.so/%s" % parent)
 

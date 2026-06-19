@@ -9,7 +9,7 @@ merge 원칙:
 - Notion에 없는 로컬 필드(id, estimate, 향후 지도 좌표 등)는 보존한다.
 - 표에서 빠진 매물은 자동 삭제하지 않고 경고만 한다(데이터 유실 방지).
 - 표에 새로 생긴 매물은 id 없이 추가하고, id 수동 부여를 경고한다.
-- 거래유형>시 분류(groups)는 Notion의 헤딩·표 배치를 그대로 반영한다.
+- 거래유형>시>구 분류(groups)는 Notion의 헤딩·표 배치를 그대로 반영한다.
 
 실행:
     python3 notion_pull.py   # .notion.json의 block_ids가 가리키는 표를 읽어 JSON 갱신
@@ -86,33 +86,41 @@ def fetch_children(token, block_id):
 
 
 def fetch_groups(conf, token):
-    """block_ids를 따라가며 거래유형>시 2단계 구조를 복원한다.
+    """block_ids를 따라가며 거래유형>시>구 3단계 구조를 복원한다.
 
-    block_ids는 push가 [heading_2(거래유형), heading_3(시), table, heading_3, table, ...,
-    heading_2(거래유형), ...] 순으로 저장한다. 블록 타입을 직접 확인해,
-    table 직전 heading_3을 '시', 그 위 heading_2를 거래유형으로 묶는다.
+    block_ids는 push가 [heading_1(거래유형), heading_2(시), heading_3(구), table,
+    heading_3, table, ..., heading_2(시), ..., heading_1(거래유형), ...] 순으로 저장한다.
+    블록 타입을 직접 확인해, table 직전 heading_3을 '구', 그 위 heading_2를 '시',
+    그 위 heading_1을 거래유형으로 묶는다.
 
-    반환: [{"title", "attrs", "cities": [{"city", "names", "data"}]}].
-    같은 거래유형의 모든 시 표는 attrs가 같아 마지막 표 기준으로 group.attrs를 둔다.
+    반환: [{"title", "attrs", "tables": [{"city", "district", "names", "data"}]}].
+    tables는 문서 순서대로의 (시,구)별 표 리스트다(중첩은 apply_pull에서 복원).
+    같은 거래유형의 모든 표는 attrs가 같아 마지막 표 기준으로 group.attrs를 둔다.
     """
     groups = []
     cur_group = None
     cur_city = None
+    cur_district = None
     for bid in conf.get("block_ids", []):
         block = api("/blocks/%s" % normalize_id(bid), method="GET", token=token)
         btype = block.get("type")
-        if btype == "heading_2":
-            cur_group = {"title": cell_plain(block["heading_2"]["rich_text"]),
-                         "attrs": [], "cities": []}
+        if btype == "heading_1":
+            cur_group = {"title": cell_plain(block["heading_1"]["rich_text"]),
+                         "attrs": [], "tables": []}
             groups.append(cur_group)
             cur_city = None
+            cur_district = None
+        elif btype == "heading_2":
+            cur_city = cell_plain(block["heading_2"]["rich_text"])
+            cur_district = None
         elif btype == "heading_3":
-            cur_city = cell_plain(block["heading_3"]["rich_text"])
+            cur_district = cell_plain(block["heading_3"]["rich_text"])
         elif btype == "table" and cur_group is not None:
             names, attrs, data = parse_table_rows(fetch_children(token, block["id"]))
             cur_group["attrs"] = attrs
-            cur_group["cities"].append(
-                {"city": cur_city or "", "names": names, "data": data})
+            cur_group["tables"].append(
+                {"city": cur_city or "", "district": cur_district or "",
+                 "names": names, "data": data})
     return groups
 
 
@@ -147,21 +155,37 @@ def merge_listing(old, new_attrs, attrs):
     return rec
 
 
+def _nest_cities(tables):
+    """문서 순서의 (시,구)별 표 리스트를 시 아래 구를 중첩한 config 형태로 묶는다.
+
+    같은 시는 등장 순서를 보존해 하나의 city로 합치고, 그 안에 districts를 순서대로 쌓는다.
+    반환: [{"city", "districts": [{"district", "names"}]}].
+    """
+    by_city = {}
+    order = []
+    for t in tables:
+        if t["city"] not in by_city:
+            by_city[t["city"]] = []
+            order.append(t["city"])
+        by_city[t["city"]].append({"district": t["district"], "names": t["names"]})
+    return [{"city": c, "districts": by_city[c]} for c in order]
+
+
 def apply_pull(groups, listings, config):
     """Notion에서 읽은 groups를 listings/config에 merge한다. 변경 요약을 반환."""
     notion_names, updated, created = [], [], []
     for group in groups:
         attrs = group["attrs"]
-        for city in group["cities"]:
-            for name in city["names"]:
+        for table in group["tables"]:
+            for name in table["names"]:
                 notion_names.append(name)
                 old = listings.get(name)
                 (created if old is None else updated).append(name)
-                listings[name] = merge_listing(old, city["data"][name], attrs)
+                listings[name] = merge_listing(old, table["data"][name], attrs)
 
     config["groups"] = [
         {"title": g["title"], "attrs": g["attrs"],
-         "cities": [{"city": c["city"], "names": c["names"]} for c in g["cities"]]}
+         "cities": _nest_cities(g["tables"])}
         for g in groups]
     orphans = [n for n in listings if n not in notion_names]
     return updated, created, orphans
