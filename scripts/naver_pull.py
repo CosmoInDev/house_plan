@@ -189,8 +189,19 @@ def set_hoga(listing, value):
 
 
 def gu_of(listings, name):
-    m = re.search(r"(\S+구)", listings.get(name, {}).get("지역", ""))
-    return m.group(1) if m else ""
+    """매물의 지역 문자열에서 '구'를 뽑는다.
+
+    지역 형식이 두 가지다:
+      - 서울: '서울 관악구 봉천동'  → '구' 접미사가 붙어 있어 정규식이 바로 잡힌다.
+      - 경기: '성남 분당 구미동'    → 구가 접미사 없이('분당'·'수지'·'영통') 적혀 정규식이 못 잡는다.
+    경기 형식은 '시 구 동' 3토큰이 일관되므로, 정규식 실패 시 두 번째 토큰을 구로 보고 '구'를 보정한다.
+    """
+    z = listings.get(name, {}).get("지역", "")
+    m = re.search(r"(\S+구)", z)
+    if m:
+        return m.group(1)
+    toks = z.split()
+    return (toks[1] + "구") if len(toks) >= 3 else ""
 
 
 def do_resolve(mapping, listings, token, sleep):
