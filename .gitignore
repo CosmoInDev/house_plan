@@ -4,9 +4,10 @@
 # 국토부 실거래가 오픈API 인증키 — 절대 커밋 금지
 .molit.json
 
-# 카카오 로컬/지도 API 인증키 — 절대 커밋 금지
+# 카카오 REST API 인증키(서버용 지오코딩) — 절대 커밋 금지
 .kakao.json
-web/map_key.js
+# web/map_key.js 는 도메인 제한이 걸린 클라이언트용 JS 키라
+# GitHub Pages 배포를 위해 의도적으로 커밋한다(공개 허용, 허용 도메인 밖에선 무효).
 
 # 파이썬 캐시
 __pycache__/
