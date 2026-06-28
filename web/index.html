@@ -20,6 +20,11 @@
     }
     .toggle button.active { background: #3b82f6; color: #fff; }
     .count { font-size: 13px; color: #9ca3af; margin-left: auto; }
+    .reset-btn {
+      border: 1px solid #4b5563; background: #374151; color: #d1d5db;
+      padding: 6px 12px; border-radius: 8px; font-size: 12.5px; cursor: pointer;
+    }
+    .reset-btn:hover { background: #4b5563; color: #fff; }
     #map { flex: 1 1 auto; }
     #notice {
       display: none; padding: 14px 16px; background: #fef3c7; color: #92400e;
@@ -62,6 +67,7 @@
         <button id="btn-rent" data-type="rent">월세 / 전세</button>
       </div>
       <span class="count" id="count"></span>
+      <button id="btn-reset" class="reset-btn" title="이 브라우저에서 지도에 숨긴 매물을 모두 복원합니다">숨김 초기화</button>
     </header>
     <div id="notice"></div>
     <div id="map"></div>

@@ -11,6 +11,33 @@
 (function () {
   var DATA = '../data/';
   var SALE = '매매', RENT = '월세/전세';
+  var REPO = 'CosmoInDev/house_plan';             // 삭제요청 이슈 생성 대상 저장소
+  var DELETED_KEY = 'house_plan.deletedListings'; // localStorage: 지도에서 숨긴 매물명(이 브라우저 한정)
+
+  function loadDeleted() {
+    try { return new Set(JSON.parse(localStorage.getItem(DELETED_KEY) || '[]')); }
+    catch (e) { return new Set(); }
+  }
+  function saveDeleted(set) {
+    try { localStorage.setItem(DELETED_KEY, JSON.stringify(Array.from(set))); } catch (e) {}
+  }
+  // GitHub '새 이슈' 프리필 URL(제목·본문·라벨 자동 입력). 토큰 불필요 — 로그인 사용자가 Submit만 누르면 저장된다.
+  function deletionIssueUrl(name, type, listing, c) {
+    var typeLabel = type === 'sale' ? '매매' : '월세/전세';
+    var body = [
+      '지도 SPA에서 삭제 요청된 매물입니다.', '',
+      '- 단지명: ' + name,
+      '- 거래유형: ' + typeLabel,
+      '- 지역: ' + ((listing && listing['지역']) || ''),
+      '- 좌표: ' + (c ? c.lat + ', ' + c.lng : ''),
+      '- 요청 시각: ' + new Date().toLocaleString('ko-KR'), '',
+      '> 확인 후 data/listings.json·config.json(및 Notion)에서 제거하면 완전 삭제됩니다.'
+    ].join('\n');
+    return 'https://github.com/' + REPO + '/issues/new'
+      + '?title=' + encodeURIComponent('[삭제요청] ' + name)
+      + '&body=' + encodeURIComponent(body)
+      + '&labels=' + encodeURIComponent('deletion-request');
+  }
 
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -58,7 +85,8 @@
              (r[1] ? multiline(r[1]) : '<span class="tlabel">—</span>') + '</div>';
     }).join('');
     return '<div class="tip"><div class="tname">' + escapeHtml(name) + '</div>' +
-           body + '<div class="thint">클릭 → 네이버 부동산</div><div class="tarrow"></div></div>';
+           body + '<div class="thint">클릭 → 네이버 부동산 · 우클릭 → 삭제요청</div>' +
+           '<div class="tarrow"></div></div>';
   }
 
   // DOM 핀 요소를 만든다(카카오 Marker 대신 CustomOverlay로 렌더).
@@ -95,6 +123,8 @@
 
   function render(listings, config, coords, naverMap) {
     var typeOf = buildTypeIndex(config);
+    var deleted = loadDeleted();         // 이 브라우저에서 숨긴 매물명(localStorage)
+    var current = 'sale';                // 현재 보이는 거래유형
     var map = new kakao.maps.Map(document.getElementById('map'), {
       center: new kakao.maps.LatLng(37.366, 127.108), // 정자역 부근 초기 중심
       level: 8
@@ -118,33 +148,62 @@
       var pin = new kakao.maps.CustomOverlay({
         position: pos, content: el, xAnchor: 0.5, yAnchor: 1.0, zIndex: 2, clickable: true
       });
+      pin._name = name;
       // 호버 시 이 핀 오버레이를 최상단으로 → 툴팁이 옆 핀에 가리지 않음(z-index만 변경, 깜빡임 없음)
       el.addEventListener('mouseenter', function () { pin.setZIndex(10000); });
       el.addEventListener('mouseleave', function () { pin.setZIndex(2); });
       el.addEventListener('click', function () { window.open(url, '_blank'); });
+      // 우클릭 → 지도에서 숨김(localStorage) + GitHub 삭제요청 이슈 작성 페이지 오픈
+      el.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        if (!confirm("'" + name + "' 매물을 지도에서 삭제하고 GitHub 삭제요청 이슈를 만들까요?\n\n" +
+                     "· 지도에서 숨겨집니다(이 브라우저, 새로고침 후에도 유지)\n" +
+                     "· 새 탭에 삭제요청 이슈 작성 페이지가 열립니다 → 'Submit'을 눌러 저장하세요")) return;
+        deleted.add(name); saveDeleted(deleted);
+        pin.setMap(null);
+        refresh(false);
+        window.open(deletionIssueUrl(name, type, listings[name], c), '_blank');
+      });
 
       sets[type].push(pin);
     });
 
-    function show(type) {
+    // fit=true면 보이는 마커에 맞춰 지도 범위를 다시 잡는다(유형 전환·복원 시). 단일 삭제 땐 fit=false.
+    function refresh(fit) {
       ['sale', 'rent'].forEach(function (t) {
-        sets[t].forEach(function (m) { m.setMap(t === type ? map : null); });
+        sets[t].forEach(function (m) {
+          m.setMap((t === current && !deleted.has(m._name)) ? map : null);
+        });
       });
-      // 보이는 마커에 맞춰 지도 범위 조정
-      if (sets[type].length) {
+      var vis = sets[current].filter(function (m) { return !deleted.has(m._name); });
+      if (fit && vis.length) {
         var b = new kakao.maps.LatLngBounds();
-        sets[type].forEach(function (m) { b.extend(m.getPosition()); });
+        vis.forEach(function (m) { b.extend(m.getPosition()); });
         map.setBounds(b);
       }
-      document.getElementById('btn-sale').classList.toggle('active', type === 'sale');
-      document.getElementById('btn-rent').classList.toggle('active', type === 'rent');
+      document.getElementById('btn-sale').classList.toggle('active', current === 'sale');
+      document.getElementById('btn-rent').classList.toggle('active', current === 'rent');
+      var hiddenHere = sets[current].filter(function (m) { return deleted.has(m._name); }).length;
       var miss = missing.length ? '  ·  좌표 미확보 ' + missing.length + '건' : '';
+      var hid = hiddenHere ? '  ·  숨김 ' + hiddenHere + '건' : '';
       document.getElementById('count').textContent =
-        (type === 'sale' ? '매매' : '월세/전세') + ' ' + sets[type].length + '건' + miss;
+        (current === 'sale' ? '매매' : '월세/전세') + ' ' + vis.length + '건' + miss + hid;
     }
+
+    function show(type) { current = type; refresh(true); }
 
     document.getElementById('btn-sale').addEventListener('click', function () { show('sale'); });
     document.getElementById('btn-rent').addEventListener('click', function () { show('rent'); });
+
+    // 숨김 초기화: localStorage를 비워 숨긴 매물을 모두 복원(GitHub 이슈는 영향 없음)
+    var resetBtn = document.getElementById('btn-reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function () {
+        if (!deleted.size) { alert('지도에서 숨긴 매물이 없습니다.'); return; }
+        if (!confirm('지도에서 숨긴 매물 ' + deleted.size + '건을 모두 복원할까요?\n(GitHub 이슈는 영향받지 않습니다.)')) return;
+        deleted.clear(); saveDeleted(deleted); refresh(true);
+      });
+    }
 
     show('sale');   // 기본 매매 뷰
   }
