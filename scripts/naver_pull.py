@@ -55,6 +55,10 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 BASE = "https://new.land.naver.com"
 AREA_TOL = 2.0          # 전용면적 매칭 허용 오차(㎡): area2가 정수로 잘려 와도 평형 구분엔 충분(25↔34평 차 큼)
 PAGE_CAP = 12           # 단지당 최대 페이지(폭주 방지)
+# 월세 보증금 상한(만원): 매물_관리.md [가격 기준]의 월세 보증금 상한(2026-06-28 1.5억으로 하향).
+# 보증금이 이 값을 넘는 월세는 반전세성으로 자본이 묶여 '여유자금 투자' 목적에 어긋나므로 후보에서 제외한다.
+# 전세금에는 적용하지 않는다(전세는 cap 없이 참고 정보로 병기).
+WOLSE_DEPOSIT_CAP = 15000   # 1.5억
 TOKEN_RE = re.compile(r"eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+")
 
 _opener = urllib.request.build_opener(
@@ -117,10 +121,31 @@ def parse_price_eok(s):
         return None
 
 
+def parse_manwon(s):
+    """'3억 3,000', '3,000', '1억' → 만원(int). 실패 시 None."""
+    if not s:
+        return None
+    t = str(s).replace(" ", "").replace(",", "")
+    try:
+        if "억" in t:
+            eok_s, rest = t.split("억", 1)
+            return int(eok_s) * 10000 + (int(rest) if rest else 0)
+        return int(t)
+    except ValueError:
+        return None
+
+
 def fmt_eok(v):
     s = "%.2f" % v
     s = s.rstrip("0").rstrip(".")
     return s if "." in s else s + ".0"
+
+
+def fmt_dep(manwon):
+    """보증금(만원)을 '3억'·'5,000만' 식으로 사람이 읽기 좋게."""
+    if manwon >= 10000:
+        return fmt_eok(manwon / 10000.0) + "억"
+    return "%s만" % format(manwon, ",")
 
 
 def fetch_sale_articles(complexno, token, sleep):
@@ -146,6 +171,76 @@ def fetch_sale_articles(complexno, token, sleep):
             break
         time.sleep(sleep)
     return out
+
+
+def fetch_lease_articles(complexno, token, sleep, tradetype):
+    """단지 한 곳의 전세(B1)·월세(B2) 매물을 페이지네이션으로 수집.
+
+    반환: B1 → [(area2, 전세금_만원)], B2 → [(area2, 보증금_만원, 월세_만원)].
+    `dealOrWarrantPrc`가 전세금/월세 보증금, `rentPrc`가 월세(만원)다.
+    """
+    out = []
+    for page in range(1, PAGE_CAP + 1):
+        url = (BASE + "/api/articles/complex/%s?realEstateType=APT&tradeType=%s"
+               "&order=prc&page=%d&complexNo=%s&showArticle=true&sameAddressGroup=false"
+               % (complexno, tradetype, page, complexno))
+        data = json.loads(http_get(url, referer=BASE + "/complexes/%s" % complexno, token=token))
+        arts = data.get("articleList", [])
+        for a in arts:
+            if a.get("tradeTypeName") not in (None, "전세", "월세"):
+                continue
+            try:
+                area = float(a.get("area2"))
+            except (TypeError, ValueError):
+                continue
+            dep = parse_manwon(a.get("dealOrWarrantPrc"))
+            if dep is None:
+                continue
+            if tradetype == "B1":
+                out.append((area, dep))
+            else:
+                rent = parse_manwon(a.get("rentPrc"))
+                if rent is not None:
+                    out.append((area, dep, rent))
+        if not data.get("isMoreData") or not arts:
+            break
+        time.sleep(sleep)
+    return out
+
+
+def resolve_lease(entry, token, sleep):
+    """단지 한 곳의 평형별 전세 최저 호가·월세(보증금 최저 매물) 호가를 매칭.
+
+    반환: (전세 가격 문자열 or None, 월세 가격 문자열 or None, 경고 리스트).
+    """
+    hscpnos = entry["hscpNo"]
+    if isinstance(hscpnos, str):
+        hscpnos = [hscpnos]
+    jeonse, wolse = [], []
+    for i, no in enumerate(hscpnos):
+        if i:
+            time.sleep(sleep)
+        jeonse += fetch_lease_articles(no, token, sleep, "B1")
+        time.sleep(sleep)
+        wolse += fetch_lease_articles(no, token, sleep, "B2")
+
+    j_lines, w_lines, warns = [], [], []
+    for label, target in entry["areas"].items():
+        jc = [dep for area, dep in jeonse if abs(area - target) <= AREA_TOL]
+        if jc:
+            j_lines.append("  • %s 전세 %s억 (최저, %d건)" % (label, fmt_eok(min(jc) / 10000.0), len(jc)))
+        else:
+            warns.append("%s 전세 매물 없음" % label)
+        # 보증금 상한(WOLSE_DEPOSIT_CAP) 이하 월세만 후보로 본다 — 반전세성(보증금 과다) 매물 제외.
+        wc = [(dep, rent) for area, dep, rent in wolse
+              if abs(area - target) <= AREA_TOL and dep <= WOLSE_DEPOSIT_CAP]
+        if wc:
+            dep, rent = min(wc)  # 보증금 최저 매물(여유자금 확보 목적에 부합)
+            w_lines.append("  • %s 보증금 %s / 월 %d만 (최저보증금, %d건)"
+                           % (label, fmt_dep(dep), rent, len(wc)))
+        else:
+            warns.append("%s 월세 매물 없음(보증금 %s 이하)" % (label, fmt_dep(WOLSE_DEPOSIT_CAP)))
+    return ("\n".join(j_lines) or None), ("\n".join(w_lines) or None), warns
 
 
 def resolve(entry, token, sleep):
@@ -204,7 +299,7 @@ def gu_of(listings, name):
     return (toks[1] + "구") if len(toks) >= 3 else ""
 
 
-def do_resolve(mapping, listings, token, sleep):
+def do_resolve(mapping, listings, token, sleep, out_name="naver_map.json"):
     """빈 hscpNo를 new.land 검색으로 채운다(단지명+행정구 매칭). 변경분을 파일에 기록."""
     changed = 0
     for name, entry in mapping.items():
@@ -226,21 +321,83 @@ def do_resolve(mapping, listings, token, sleep):
             print("    → 후보 여럿: hscpNo를 직접 골라 naver_map.json에 넣으세요")
         time.sleep(sleep)
     if changed:
-        with open(os.path.join(DATA_DIR, "naver_map.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(DATA_DIR, out_name), "w", encoding="utf-8") as f:
             json.dump(mapping, f, ensure_ascii=False, indent=2)
-        print("\nnaver_map.json에 hscpNo %d개 자동 기록." % changed)
+        print("\n%s에 hscpNo %d개 자동 기록." % (out_name, changed))
+
+
+def fill_lease(mapping, listings, token, args):
+    """--lease: 전세/월세 호가를 listings.json '전세 가격'·'월세 가격'에 채운다."""
+    filled, skipped, nomatch, nokey = [], [], [], []
+    for name, entry in mapping.items():
+        if name.startswith("_") or name not in listings:
+            continue
+        if args.only and name != args.only:
+            continue
+        if entry.get("skip"):
+            skipped.append((name, entry["skip"]))
+            continue
+        if not entry.get("hscpNo"):
+            nokey.append(name)
+            continue
+        jval, wval, warns = resolve_lease(entry, token, args.sleep)
+        if jval or wval:
+            # 한쪽이라도 매물을 받았으면(=조회 성공) 양쪽을 현재 호가로 덮어쓴다.
+            # 조건에 맞는 매물이 없는 쪽(예: 보증금 1.5억 초과뿐인 월세)은 빈칸으로 비워
+            # stale 값이 남지 않게 한다(매물_관리.md: 네이버에 매물 없으면 그 평형은 비워 둔다).
+            listings[name]["전세 가격"] = jval or ""
+            listings[name]["월세 가격"] = wval or ""
+            filled.append((name, jval, wval, warns))
+        else:
+            nomatch.append((name, warns))
+        time.sleep(args.sleep)
+
+    print("=== 채움 (%d) ===" % len(filled))
+    for name, jval, wval, warns in filled:
+        print("  %s:" % name)
+        if jval:
+            print("    전세 %s" % jval.replace("\n", " /").strip())
+        if wval:
+            print("    월세 %s" % wval.replace("\n", " /").strip())
+        if warns:
+            print("    ⚠ %s" % "; ".join(warns))
+    print("=== 매칭 없음 — 빈칸 유지 (%d) ===" % len(nomatch))
+    for name, warns in nomatch:
+        print("  %s: %s" % (name, "; ".join(warns)))
+    if nokey:
+        print("=== hscpNo 미입력 (%d) — `--resolve --lease`로 채우세요 ===" % len(nokey))
+        for name in nokey:
+            print("  %s" % name)
+    if skipped:
+        print("=== 건너뜀 skip (%d) ===" % len(skipped))
+        for name, reason in skipped:
+            print("  %s: %s" % (name, reason))
+
+    if args.dry_run:
+        print("\n[dry-run] listings.json은 변경하지 않았습니다.")
+        return
+    if not filled:
+        print("\n채운 값이 없어 listings.json을 그대로 둡니다.")
+        return
+    with open(os.path.join(DATA_DIR, "listings.json"), "w", encoding="utf-8") as f:
+        json.dump(listings, f, ensure_ascii=False, indent=2)
+    print("\nlistings.json에 %d개 단지 전세/월세 호가 기록 완료. 이어서 `python3 make_notion.py`로 배포하세요."
+          % len(filled))
 
 
 def main():
-    ap = argparse.ArgumentParser(description="네이버 매매 호가를 listings.json에 채운다")
+    ap = argparse.ArgumentParser(description="네이버 매매/전세·월세 호가를 listings.json에 채운다")
     ap.add_argument("--dry-run", action="store_true", help="적용 없이 제안만 출력")
     ap.add_argument("--only", help="이 단지명 하나만 처리")
     ap.add_argument("--resolve", action="store_true", help="빈 hscpNo를 검색해 채우고 종료")
+    ap.add_argument("--lease", action="store_true",
+                    help="전세(B1)/월세(B2) 호가를 naver_lease_map.json 기준으로 채운다")
     ap.add_argument("--sleep", type=float, default=1.5, help="요청 간 대기 초(기본 1.5)")
     args = ap.parse_args()
 
+    map_name = "naver_lease_map.json" if args.lease else "naver_map.json"
     listings = load_json("listings.json")
-    mapping = load_json("naver_map.json")
+    mapping = load_json(map_name)
 
     # 토큰 추출용 seed 단지(아무 hscpNo나 하나)
     seed = next((e["hscpNo"][0] if isinstance(e["hscpNo"], list) else e["hscpNo"]
@@ -252,7 +409,11 @@ def main():
     token = warmup_and_token(seed)
 
     if args.resolve:
-        do_resolve(mapping, listings, token, args.sleep)
+        do_resolve(mapping, listings, token, args.sleep, map_name)
+        return
+
+    if args.lease:
+        fill_lease(mapping, listings, token, args)
         return
 
     filled, skipped, nomatch, nokey = [], [], [], []

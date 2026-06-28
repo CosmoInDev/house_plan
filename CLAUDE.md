@@ -33,7 +33,8 @@ house_plan/
 │   ├── listings.json      # ★ 매물 데이터 단일 소스(single source of truth)
 │   ├── config.json        # 거래유형별 열 순서(groups[].attrs)·시>구별 매물 배치(groups[].cities[].districts[].names)
 │   ├── molit_map.json     # 국토부 실거래가 API 매칭표(단지→시군구코드·단지명 패턴·전용면적)
-│   ├── naver_map.json     # 네이버 호가 매칭표(단지→hscpNo·전용면적)
+│   ├── naver_map.json     # 네이버 매매 호가 매칭표(단지→hscpNo·전용면적)
+│   ├── naver_lease_map.json # 네이버 전세/월세 호가 매칭표(naver_pull.py --lease 전용)
 │   └── coords.json        # 카카오 지오코딩 좌표 캐시(단지→lat·lng), 지도 SPA 마커용
 ├── web/                   # 매물 지도 SPA (정적, 빌드 없음)
 │   ├── index.html         # 카카오맵 + 매매/임대 토글 + 마커 툴팁/네이버 링크
